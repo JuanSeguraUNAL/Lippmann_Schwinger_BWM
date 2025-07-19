@@ -91,9 +91,9 @@ public:
         cusolverDnCreate(&cusolver_handle);
         cusolverDnCreateParams(&params);
 
-        gamma = (double*)malloc(gamma_size*sizeof(double));
+        gamma = (double*)malloc(N*sizeof(double));
         if (gamma_size == 1){
-            double value;
+            double value = gamma_vals[0];
             for(int i = 0; i < N; ++i){
                 gamma[i] = value;
             }
@@ -104,12 +104,48 @@ public:
             }
         }
 
+
+
         kx = k * std::cos(angle);
-        ky = k * std::cos(angle);
+        ky = k * std::sin(angle);
+
+        std::cout << "K = (" << kx << " , " << ky << ")\n";
 
         segment_lengths = calculateSegmentLenghts();
+        std::cout << "SE CALCULARON LAS LONGITUDES DE LOS SEGMENTOS\n";
+
+        for(int i = 0; i < N; ++i){
+            //std::cout << i << "-esimo punto: (" << boundary[i].x << " , " << boundary[i].y << ")\n";
+        }
+
+        for(int i = 0; i < N; ++i){
+            //std::cout << i << "-esima longitud de segmento: " << segment_lengths[i] << "\n";
+        }
+
         M_flat          = buildMMatrixFlat();
+        std::cout << "SE CALCULO LA MATRIZ M\n";
+
+        /*
+        for(int i = 0; i < N; ++i){
+            for(int j = 0; j < N; ++j){
+                std::cout << M_flat[i + N * j].x << "+i" << M_flat[i + N * j].y << "\t";
+            }
+            std::cout << "\n";
+        }
+        */
+
         T               = buildTMatrix();
+        std::cout << "SE CALCULO LA MATRIZ T\n";
+
+        
+        for(int i = 0; i < N; ++i){
+            for(int j = 0; j < N; ++j){
+                std::cout << T[i + N * j].x << "+i" << T[i + N * j].y << "\t";
+            }
+            std::cout << "\n";
+        }
+        
+
     }
 
     cuDoubleComplex incidentWave(double x, double y) const{
@@ -134,6 +170,7 @@ public:
     }
 
     cuDoubleComplex* computeScatteredWave(const Point *obs, size_t n_obs){
+        //std::cout << "COMPUTE THE SCATTERED WAVE\n"; 
         // Compute the incident wave
         cuDoubleComplex *h_phi, *d_phi;
         size_t bytes = N * sizeof(cuDoubleComplex);
@@ -145,12 +182,14 @@ public:
         cudaMemcpy(d_phi, h_phi, bytes, cudaMemcpyHostToDevice);
 
         // Multiply the interaction matrix T with the vector phi
-        cuDoubleComplex *h_Tphi, *d_Tphi;
+        cuDoubleComplex *h_Tphi, *d_Tphi, *d_T;
         h_Tphi = (cuDoubleComplex*)malloc(bytes);
         cudaMalloc(&d_Tphi, bytes);
+        cudaMalloc(&d_T, N * bytes);
+        cudaMemcpy(d_T, T, N * bytes, cudaMemcpyHostToDevice);
         cuDoubleComplex alpha = make_cuDoubleComplex(1.0, 0.0);
         cuDoubleComplex beta  = make_cuDoubleComplex(0.0, 0.0);
-        cublasZgemv(handle, CUBLAS_OP_N, N, N, &alpha, T, N, d_phi, 1, &beta, d_Tphi, 1);
+        cublasZgemv(handle, CUBLAS_OP_N, N, N, &alpha, d_T, N, d_phi, 1, &beta, d_Tphi, 1);
         cudaMemcpy(h_Tphi, d_Tphi, bytes, cudaMemcpyDeviceToHost);
 
         // Evaluate the total wave over every observation point
@@ -169,24 +208,35 @@ public:
         // Free memory
         cudaFree(d_phi); cudaFree(d_Tphi); free(h_phi); free(h_Tphi);
 
+        //std::cout << "COMPUTE THE SCATTERED WAVE COMPLETED\n"; 
         return psi;
     }
 
 private:
     // Index of a 2D matrix with column major
     size_t idx(size_t i, size_t j){return i + j * N;}
-    // Given the index, calculate (i,j) position in the matrix
+    // Given the index, calculate (i,j) position in the matrix (column major)
     std::pair<size_t, size_t> ij(size_t id){return {id%N, id/N}; }
 
     // Compute the lenght of the segments of the boundary
     double* calculateSegmentLenghts() {
         double *h_L, *d_L;
+        Point *d_boundary;
         size_t bytes = N * sizeof(double);
         h_L = (double*)malloc(bytes);
         cudaMalloc(&d_L, bytes);
+        cudaMalloc(&d_boundary, N*sizeof(Point));
+        cudaMemcpy(d_boundary, boundary, N*sizeof(Point), cudaMemcpyHostToDevice);
         int NUM_BLOCKS = (N + NUM_THREADS - 1) / NUM_THREADS;
-        kernelLenght<<<NUM_BLOCKS, NUM_THREADS>>>(d_L, boundary, N);
+        kernelLenght<<<NUM_BLOCKS, NUM_THREADS>>>(d_L, d_boundary, N);
         cudaDeviceSynchronize();
+
+        // Verifica errores del kernel
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            std::cerr << "Error en kernelLenght: " << cudaGetErrorString(err) << std::endl;
+        }
+
         cudaMemcpy(h_L, d_L, bytes, cudaMemcpyDeviceToHost);
         cudaFree(d_L);
 
@@ -197,15 +247,16 @@ private:
     cuDoubleComplex green(const Point r1, const Point r2){
         double R = distance(r1, r2);
         double arg = k * R;
+
+        //std::cout << "El valor de k*R es: " << arg << "\n";
+
         if (R < 1e-10) return handleDiagonal();
 
         if (std::isnan(R) || std::isinf(R) || arg > 1e4){
             std::cerr << "[ERROR] Green function overflow: R = " << R
                     << ", k = " << k << ", k*R = " << arg << "\n";
-            std::abort(); // puedes usar return make_cuDoubleComplex(0,0); para evitar el crash
+            std::abort(); 
         }
-
-        std::cout << "El valor de k*R es: " << arg << "\n";
 
         std::complex<double> hankel = boost::math::cyl_hankel_1(0, k*R);
         double hankel_real = alpha * 0.25 * hankel.real();
@@ -218,7 +269,7 @@ private:
         std::vector<double> lengths(segment_lengths, segment_lengths + N);
         double avg = std::accumulate(lengths.begin(), lengths.end(), 0.0) / N;
 
-        std::cout << "El valor de k*(avg/2.0) es: " << k*(avg/2.0) << "\n";
+        //std::cout << "El valor de k*(avg/2.0) es: " << k*(avg/2.0) << "\n";
 
         std::complex<double> hankel = boost::math::cyl_hankel_1(0, k*(avg/2.0));
         double hankel_real = alpha * 0.25 * hankel.real() * avg;
