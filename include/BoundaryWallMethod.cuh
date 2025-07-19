@@ -137,13 +137,14 @@ public:
         T               = buildTMatrix();
         std::cout << "SE CALCULO LA MATRIZ T\n";
 
-        
+        /*
         for(int i = 0; i < N; ++i){
             for(int j = 0; j < N; ++j){
                 std::cout << T[i + N * j].x << "+i" << T[i + N * j].y << "\t";
             }
             std::cout << "\n";
         }
+        */
         
 
     }
@@ -170,7 +171,6 @@ public:
     }
 
     cuDoubleComplex* computeScatteredWave(const Point *obs, size_t n_obs){
-        //std::cout << "COMPUTE THE SCATTERED WAVE\n"; 
         // Compute the incident wave
         cuDoubleComplex *h_phi, *d_phi;
         size_t bytes = N * sizeof(cuDoubleComplex);
@@ -197,10 +197,10 @@ public:
         bytes = n_obs * sizeof(cuDoubleComplex);
         psi = (cuDoubleComplex*)malloc(bytes);
         for (size_t i = 0; i < n_obs; ++i){
-            psi[i] = incidentWave(obs[i].x, boundary[i].x);
+            psi[i] = incidentWave(obs[i].x, obs[i].y);
             // Add the contribution of the scattered wave
             for(size_t j = 0; j < N; ++j){
-                cuDoubleComplex G = green(obs[i], boundary[i]);
+                cuDoubleComplex G = green(obs[i], boundary[j]);
                 psi[i] = cuCadd(psi[i], cuCmul(cuCmul(G, make_cuDoubleComplex(segment_lengths[j], 0.0)), h_Tphi[j]));
             }
         }
@@ -208,7 +208,6 @@ public:
         // Free memory
         cudaFree(d_phi); cudaFree(d_Tphi); free(h_phi); free(h_Tphi);
 
-        //std::cout << "COMPUTE THE SCATTERED WAVE COMPLETED\n"; 
         return psi;
     }
 
