@@ -16,21 +16,20 @@
 #include <cuComplex.h>
 #include "ConfocalParabolicBilliard.cuh"
 
-int NUM_THREADS = 128;
-const cuDoubleComplex I = make_cuDoubleComplex(0.0, 1.0);
+int NUM_THREADS = 128;                         // Number of threads per block
 
 // Compute the distance between to point (Euclidean norm of a - b)
-double distance(const Point &a, const Point &b){
+__device__ double distance(const Point &a, const Point &b){
     double dx = a.x - b.x;
     double dy = a.y - b.y;
-    return std::sqrt(dx*dx + dy*dy);
+    return sqrt(dx*dx + dy*dy);
 }
 
 namespace bwm {
 
 //
 __global__ void kernel_normT(const cuDoubleComplex* d_T, double* d_partial_sums, int N){
-    extern __shared__ double sdata[];
+    extern __shared__ double sdata_normT[];
 
     int tid = threadIdx.x;
     int idx = blockIdx.x * blockDim.x + tid;
@@ -40,17 +39,92 @@ __global__ void kernel_normT(const cuDoubleComplex* d_T, double* d_partial_sums,
     if (idx < N*N){
         val = cuCabs(d_T[idx]);
     }
-    sdata[tid] = val;
+    sdata_normT[tid] = val;
     __syncthreads();
 
     //
     for(int s = blockDim.x / 2; s > 0; s>>=1){
-        if(tid < s){sdata[tid] += sdata[tid + s];}
+        if(tid < s){sdata_normT[tid] += sdata_normT[tid + s];}
         __syncthreads();
     }
 
     //
-    if(tid == 0){d_partial_sums[blockIdx.x] = sdata[0];}
+    if(tid == 0){d_partial_sums[blockIdx.x] = sdata_normT[0];}
+}
+
+__device__ cuDoubleComplex hankel_0_1(double x){
+    // H_0^1(x) = J_0(x) + iY_0(x)
+    return make_cuDoubleComplex(::j0(x), ::y0(x));
+}
+
+__device__ cuDoubleComplex handleDiagonal(double *lengths, int k, double alpha, int N){
+    cuDoubleComplex I = make_cuDoubleComplex(0.0, 1.0);
+    double avg = 0;
+    for(int i = 0; i < N; ++i){
+        avg += lengths[i];
+    }
+    avg = avg / N;
+
+    return cuCmul(cuCmul(I, make_cuDoubleComplex(alpha / 4, 0.0)), hankel_0_1(k * avg / 2.0));
+}
+
+__device__ cuDoubleComplex green(double *lengths, const Point r1, const Point r2, double k, double alpha, int N){
+    cuDoubleComplex I = make_cuDoubleComplex(0.0, 1.0);
+    double R = distance(r1, r2);
+    double arg = k * R;
+
+    if (R < 1e-10) return handleDiagonal(lengths, k, alpha, N);
+
+    return cuCmul(cuCmul(I, make_cuDoubleComplex(alpha / 4, 0.0)), hankel_0_1(arg));
+}
+
+
+//
+__global__ void TotalWave(cuDoubleComplex *psi, cuDoubleComplex *Tphi, double *lengths, Point *obs, 
+                        Point *boundary, double k, double alpha, double angle, size_t n_obs, int N){
+    extern __shared__ cuDoubleComplex sdata[];
+
+    int row = threadIdx.y;  // j dentro del bloque
+    int col = blockIdx.x;   // Cada bloque maneja un punto de observación
+    int tid = threadIdx.y * blockDim.x + threadIdx.x;
+
+    // Inicializar memoria compartida
+    sdata[tid] = make_cuDoubleComplex(0.0, 0.0);
+    
+    // Solo procesar si estamos dentro de los límites
+    if(col < n_obs && row < N) {
+        cuDoubleComplex G = green(lengths, obs[col], boundary[row], k, alpha, N);
+        sdata[tid] = cuCmul(cuCmul(G, make_cuDoubleComplex(lengths[row], 0.0)), Tphi[row]);
+    }
+    __syncthreads();
+
+    // Reducción en paralelo
+    for(int s = blockDim.y/2; s > 0; s >>= 1) {
+        if(row < s && (row + s) < N) {
+            sdata[tid] = cuCadd(sdata[tid], sdata[tid + s * blockDim.x]);
+        }
+        __syncthreads();
+    }
+
+    // Escribir resultado
+    if(row == 0 && col < n_obs) {
+        // Sumar la onda incidente al resultado dispersado
+        double phase = k * (obs[col].x * cos(angle) + obs[col].y * sin(angle));
+        cuDoubleComplex incident = make_cuDoubleComplex(cos(phase), sin(phase));
+        psi[col] = cuCadd(incident, sdata[tid]);
+    }
+}
+
+//
+__global__ void kernelMatrixM(cuDoubleComplex *M, double *lengths, Point *boundary, double k, double alpha, int N, int N2){
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if(tid < N2){
+        int i = tid % N;
+        int j = tid / N;
+        M[tid] = (i == j ? handleDiagonal(lengths,k, alpha, N) 
+                         : cuCmul(green(lengths,boundary[i],boundary[j],k,alpha,N), make_cuDoubleComplex(lengths[j], 0.0)));
+    }
 }
 
 // CUDA kernel to compute the lenght of the segments of the boundary
@@ -63,6 +137,48 @@ __global__ void kernelLenght(double *L, const Point *boundary, const size_t N){
         L[tid] = sqrt(dx*dx + dy*dy);   // Distance between consecutive boundary positions
     }
 }
+
+__device__ double funcion(double x){
+    return j0(x);
+}
+
+__global__ void kernelPrueba(double *Y, double *X, int N){
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if(tid < N){
+        Y[tid] = funcion(X[tid]);
+    }
+}
+
+void Prueba(){
+    int N = 10;
+    double *h_X, *h_Y, *d_X, *d_Y;
+    h_X = (double*)malloc(N*sizeof(double));
+    h_Y = (double*)malloc(N*sizeof(double));
+    cudaMalloc(&d_X, N*sizeof(double));
+    cudaMalloc(&d_Y, N*sizeof(double));
+
+    for(int i = 0; i < N; ++i){
+        h_X[i] = i;
+    }
+    cudaMemcpy(d_X, h_X, N*sizeof(double), cudaMemcpyHostToDevice);
+
+    kernelPrueba<<<(10 + 127) / 128, 128>>>(d_Y, d_X, N);
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "CUDA kernel launch error: " << cudaGetErrorString(err) << std::endl;
+    }
+    cudaDeviceSynchronize();
+
+    cudaMemcpy(h_Y, d_Y, N*sizeof(double), cudaMemcpyDeviceToHost);
+
+    for(int i = 0; i < N; ++i){
+        std::cout << i << "\t" << h_X[i] << "\t" << h_Y[i] << "\n";
+    }
+
+}
+
+
 
 class BoundaryWallMethod{
 public:
@@ -104,48 +220,18 @@ public:
             }
         }
 
-
-
         kx = k * std::cos(angle);
         ky = k * std::sin(angle);
 
-        std::cout << "K = (" << kx << " , " << ky << ")\n";
-
         segment_lengths = calculateSegmentLenghts();
-        std::cout << "SE CALCULARON LAS LONGITUDES DE LOS SEGMENTOS\n";
 
-        for(int i = 0; i < N; ++i){
-            //std::cout << i << "-esimo punto: (" << boundary[i].x << " , " << boundary[i].y << ")\n";
-        }
-
-        for(int i = 0; i < N; ++i){
-            //std::cout << i << "-esima longitud de segmento: " << segment_lengths[i] << "\n";
-        }
+        //Prueba();
 
         M_flat          = buildMMatrixFlat();
         std::cout << "SE CALCULO LA MATRIZ M\n";
 
-        /*
-        for(int i = 0; i < N; ++i){
-            for(int j = 0; j < N; ++j){
-                std::cout << M_flat[i + N * j].x << "+i" << M_flat[i + N * j].y << "\t";
-            }
-            std::cout << "\n";
-        }
-        */
-
         T               = buildTMatrix();
         std::cout << "SE CALCULO LA MATRIZ T\n";
-
-        /*
-        for(int i = 0; i < N; ++i){
-            for(int j = 0; j < N; ++j){
-                std::cout << T[i + N * j].x << "+i" << T[i + N * j].y << "\t";
-            }
-            std::cout << "\n";
-        }
-        */
-        
 
     }
 
@@ -170,7 +256,7 @@ public:
         return {ks, norms, refined};
     }
 
-    cuDoubleComplex* computeScatteredWave(const Point *obs, size_t n_obs){
+    cuDoubleComplex* computeScatteredWave(Point *obs, size_t n_obs){
         // Compute the incident wave
         cuDoubleComplex *h_phi, *d_phi;
         size_t bytes = N * sizeof(cuDoubleComplex);
@@ -182,31 +268,38 @@ public:
         cudaMemcpy(d_phi, h_phi, bytes, cudaMemcpyHostToDevice);
 
         // Multiply the interaction matrix T with the vector phi
-        cuDoubleComplex *h_Tphi, *d_Tphi, *d_T;
-        h_Tphi = (cuDoubleComplex*)malloc(bytes);
+        cuDoubleComplex *d_Tphi, *d_T;
         cudaMalloc(&d_Tphi, bytes);
         cudaMalloc(&d_T, N * bytes);
         cudaMemcpy(d_T, T, N * bytes, cudaMemcpyHostToDevice);
-        cuDoubleComplex alpha = make_cuDoubleComplex(1.0, 0.0);
-        cuDoubleComplex beta  = make_cuDoubleComplex(0.0, 0.0);
-        cublasZgemv(handle, CUBLAS_OP_N, N, N, &alpha, d_T, N, d_phi, 1, &beta, d_Tphi, 1);
-        cudaMemcpy(h_Tphi, d_Tphi, bytes, cudaMemcpyDeviceToHost);
+        cuDoubleComplex one = make_cuDoubleComplex(1.0, 0.0);
+        cuDoubleComplex zero  = make_cuDoubleComplex(0.0, 0.0);
+        cublasZgemv(handle, CUBLAS_OP_N, N, N, &one, d_T, N, d_phi, 1, &zero, d_Tphi, 1);
 
         // Evaluate the total wave over every observation point
-        cuDoubleComplex *psi;
-        bytes = n_obs * sizeof(cuDoubleComplex);
-        psi = (cuDoubleComplex*)malloc(bytes);
-        for (size_t i = 0; i < n_obs; ++i){
-            psi[i] = incidentWave(obs[i].x, obs[i].y);
-            // Add the contribution of the scattered wave
-            for(size_t j = 0; j < N; ++j){
-                cuDoubleComplex G = green(obs[i], boundary[j]);
-                psi[i] = cuCadd(psi[i], cuCmul(cuCmul(G, make_cuDoubleComplex(segment_lengths[j], 0.0)), h_Tphi[j]));
-            }
-        }
+        cuDoubleComplex *psi, *d_psi;
+        psi = (cuDoubleComplex*)malloc(n_obs * sizeof(cuDoubleComplex));
+        cudaMalloc(&d_psi, n_obs * sizeof(cuDoubleComplex));
+        cudaMemset(d_psi, 0, n_obs * sizeof(cuDoubleComplex));
+        dim3 blocks(n_obs, 1);  // One block per observation point
+        dim3 threads(1, 256);   // 256 threads in the Y-dimention
+        size_t shared_mem = threads.y * sizeof(cuDoubleComplex);
+
+        // Allocate memory and copy to the device for segment_lengths, obs and boundary
+        double *d_segment_lengths;
+        Point *d_obs, *d_boundary;
+        cudaMalloc(&d_segment_lengths, N * sizeof(double));
+        cudaMalloc(&d_obs, n_obs * sizeof(Point));
+        cudaMalloc(&d_boundary, N * sizeof(Point));
+        cudaMemcpy(d_segment_lengths, segment_lengths, N * sizeof(double), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_obs, obs, n_obs * sizeof(Point), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_boundary, boundary, N * sizeof(Point), cudaMemcpyHostToDevice);
+
+        TotalWave<<<blocks, threads, shared_mem>>>(d_psi, d_Tphi, d_segment_lengths, d_obs, d_boundary, k, alpha, angle, n_obs, N);
+        cudaMemcpy(psi, d_psi, n_obs * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost);
 
         // Free memory
-        cudaFree(d_phi); cudaFree(d_Tphi); free(h_phi); free(h_Tphi);
+        cudaFree(d_T); cudaFree(d_phi); cudaFree(d_Tphi); cudaFree(d_psi); free(h_phi);
 
         return psi;
     }
@@ -242,27 +335,6 @@ private:
         return h_L;
     }
 
-    // Compute the Green function
-    cuDoubleComplex green(const Point r1, const Point r2){
-        double R = distance(r1, r2);
-        double arg = k * R;
-
-        //std::cout << "El valor de k*R es: " << arg << "\n";
-
-        if (R < 1e-10) return handleDiagonal();
-
-        if (std::isnan(R) || std::isinf(R) || arg > 1e4){
-            std::cerr << "[ERROR] Green function overflow: R = " << R
-                    << ", k = " << k << ", k*R = " << arg << "\n";
-            std::abort(); 
-        }
-
-        std::complex<double> hankel = boost::math::cyl_hankel_1(0, k*R);
-        double hankel_real = alpha * 0.25 * hankel.real();
-        double hankel_imag = alpha * 0.25 * hankel.imag();
-        return make_cuDoubleComplex(-hankel_imag, hankel_real);
-    }
-
     // Treat the points near the boundary by approximating them to the Green function in a mean boundary point times the segment lenght
     cuDoubleComplex handleDiagonal(){
         std::vector<double> lengths(segment_lengths, segment_lengths + N);
@@ -278,15 +350,20 @@ private:
 
     // Build the boundary interaction matrix M
     cuDoubleComplex* buildMMatrixFlat(){
-        cuDoubleComplex* M = (cuDoubleComplex*)malloc(N*N*sizeof(cuDoubleComplex));
-        // cudaMalloc(&M, N * N * sizeof(cuDoubleComplex));
-        for(size_t id = 0; id < N*N; ++id){
-            auto[i,j] = ij(id);
-            // If the entry Mij is diagonal call handleDiagonal(), otherwise compute the Green funtion times the segment lenght
-            M[id] = (i==j
-                     ? handleDiagonal()
-                     : cuCmul(green(boundary[i], boundary[j]), make_cuDoubleComplex(segment_lengths[j], 0.0)));
-        }
+        cuDoubleComplex *M, *d_M;
+        double *d_segment_lengths;
+        Point *d_boundary;
+        M = (cuDoubleComplex*)malloc(N * N * sizeof(cuDoubleComplex));
+        cudaMalloc(&d_M, N * N * sizeof(cuDoubleComplex));
+        cudaMalloc(&d_segment_lengths, N * sizeof(double));
+        cudaMalloc(&d_boundary, N * sizeof(Point));
+        cudaMemcpy(d_segment_lengths, segment_lengths, N * sizeof(double), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_boundary, boundary, 2 * N * sizeof(double), cudaMemcpyHostToDevice);
+        int NUM_BLOCKS = (N*N + NUM_THREADS - 1) / NUM_THREADS;
+        kernelMatrixM<<<NUM_BLOCKS, NUM_THREADS>>>(d_M, d_segment_lengths, d_boundary, k, alpha, N, N*N);
+
+        cudaMemcpy(M, d_M, N * N * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost);
+
         return M;
     }
 
