@@ -149,36 +149,6 @@ __global__ void kernelPrueba(double *Y, double *X, int N){
     }
 }
 
-void Prueba(){
-    int N = 10;
-    double *h_X, *h_Y, *d_X, *d_Y;
-    h_X = (double*)malloc(N*sizeof(double));
-    h_Y = (double*)malloc(N*sizeof(double));
-    cudaMalloc(&d_X, N*sizeof(double));
-    cudaMalloc(&d_Y, N*sizeof(double));
-
-    for(int i = 0; i < N; ++i){
-        h_X[i] = i;
-    }
-    cudaMemcpy(d_X, h_X, N*sizeof(double), cudaMemcpyHostToDevice);
-
-    kernelPrueba<<<(10 + 127) / 128, 128>>>(d_Y, d_X, N);
-
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        std::cerr << "CUDA kernel launch error: " << cudaGetErrorString(err) << std::endl;
-    }
-    cudaDeviceSynchronize();
-
-    cudaMemcpy(h_Y, d_Y, N*sizeof(double), cudaMemcpyDeviceToHost);
-
-    for(int i = 0; i < N; ++i){
-        std::cout << i << "\t" << h_X[i] << "\t" << h_Y[i] << "\n";
-    }
-
-}
-
-
 
 class BoundaryWallMethod{
 public:
@@ -224,15 +194,8 @@ public:
         ky = k * std::sin(angle);
 
         segment_lengths = calculateSegmentLenghts();
-
-        //Prueba();
-
         M_flat          = buildMMatrixFlat();
-        std::cout << "SE CALCULO LA MATRIZ M\n";
-
         T               = buildTMatrix();
-        std::cout << "SE CALCULO LA MATRIZ T\n";
-
     }
 
     cuDoubleComplex incidentWave(double x, double y) const{

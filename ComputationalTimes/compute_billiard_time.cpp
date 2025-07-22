@@ -16,8 +16,9 @@ int main(int argc, char* argv[]){
     double eta0  = std::stod(argv[2]);
     double k2    = std::stod(argv[3]);
     double angle = std::stod(argv[4]);
+    int    threads = std::atoi(argv[5]);
     double gamma = std::numeric_limits<double>::infinity();
-    int    num_b = std::stod(argv[5]);
+    int    num_b = std::stod(argv[6]);
     int    Ngrid = num_b;
 
     std::chrono::high_resolution_clock::time_point start, end;
@@ -32,7 +33,7 @@ int main(int argc, char* argv[]){
 
     // 2) solver BWM
     std::vector<double> gvec{gamma};
-    bwm::BoundaryWallMethod solver(boundary, gvec, std::sqrt(k2), angle);
+    bwm::BoundaryWallMethod solver(boundary, gvec, std::sqrt(k2), angle, threads);
 
     // 3) malla y volcado de density.dat y phase.dat
     start = std::chrono::high_resolution_clock::now();

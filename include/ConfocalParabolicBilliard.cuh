@@ -117,14 +117,6 @@ private:
         cudaMemcpy(h_xi_seg1, d_xi_seg1, bytes, cudaMemcpyDeviceToHost);
         cudaMemcpy(h_eta_seg1, d_eta_seg1, bytes, cudaMemcpyDeviceToHost);
 
-        /*
-        std::cout << "VALORES DE XI_SEG1 - ETA_SEG1 \n";
-        for(int i = 0; i < n_eta; ++i){
-            std::cout << h_xi_seg1[i] << "\t" << h_eta_seg1[i] << "\n";
-        }
-        */
-        
-
         // Second segment. ξ = const (x>0). Right side
         double *h_eta_seg2, *d_eta_seg2, *h_xi_seg2, *d_xi_seg2;
         bytes = sizeof(double) * n_xi;
@@ -138,15 +130,7 @@ private:
         cudaDeviceSynchronize();
         cudaMemcpy(h_eta_seg2, d_eta_seg2, bytes, cudaMemcpyDeviceToHost);
         cudaMemcpy(h_xi_seg2, d_xi_seg2, bytes, cudaMemcpyDeviceToHost);
-
-        /*
-        std::cout << "VALORES DE XI_SEG2 - ETA_SEG2 \n";
-        for(int i = 0; i < n_eta; ++i){
-            std::cout << h_xi_seg2[i] << "\t" << h_eta_seg2[i] << "\n";
-        }
-        */
         
-
         // Correction in the x-axis in order to center the figure
         double x_disp = (h_xi_seg2[0]*h_xi_seg2[0] - h_eta_seg2[0]*h_eta_seg2[0]) / 2.0;
 
@@ -163,20 +147,6 @@ private:
         cudaDeviceSynchronize();
         cudaMemcpy(h_xi_half, d_xi_half, bytes, cudaMemcpyDeviceToHost);
         cudaMemcpy(h_eta_half, d_eta_half, bytes, cudaMemcpyDeviceToHost);
-
-        /*
-        std::cout << "COMPARACION DE LA CONCATENACION\n";
-
-        for (int i = 0; i < n_xi + n_eta; ++i){
-            if(i < n_eta){
-                std::cout << h_xi_seg1[i] << "\t" << h_xi_half[i] << "\n";
-            }
-            else{
-                std::cout << h_xi_seg2[i - n_eta] << "\t" << h_xi_half[i] << "\n";
-            }
-        }
-        */
-        
 
         // Transform from parabolic coordinates to cartesian coordinates
         double *h_x_half, *d_x_half, *h_y_half, *d_y_half;
