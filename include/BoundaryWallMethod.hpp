@@ -27,11 +27,10 @@ public:
 
     BoundaryWallMethod(const std::vector<Vector2d>& boundary_points,
                        const std::vector<double>& gamma_vals,
-                       double k_, double angle_,
-                       double alpha_ = 1.0)
+                       double k_, double angle_, int threads_)
       : boundary(boundary_points),
         N(boundary_points.size()),
-        k(k_), angle(angle_), alpha(alpha_)
+        k(k_), angle(angle_), threads(threads_)
     {
         if (gamma_vals.size() == 1)
             gamma.assign(N, gamma_vals[0]);
@@ -78,6 +77,7 @@ public:
 
         // Evaluate the total wave over every observation point
         std::vector<Complex> psi(obs.size());
+        #pragma omp parallel for num_threads(threads)
         for (size_t i = 0; i < obs.size(); ++i) {
             psi[i] = incidentWave(obs[i].x(), obs[i].y());
             // Add the contribution of the scattered wave
@@ -110,7 +110,7 @@ private:
         double R = (r1 - r2).norm();                                  // Distance between the observation point and the boundary point
         if (R < 1e-10) return handleDiagonal();                       // If the observation point is near the boundary point, avoid infinite values
         static const Complex I(0.0, 1.0);                             // Declare the complex unit
-        return alpha*I*(1.0/4.0) * boost::math::cyl_hankel_1(0, k*R); // Compute the Green function given the Hankel function of order zero
+        return I*(1.0/4.0) * boost::math::cyl_hankel_1(0, k*R); // Compute the Green function given the Hankel function of order zero
     }
 
     // Treat the points near the boundary by approximating them to the Green function in a mean boundary point times the segment lenght
@@ -118,7 +118,7 @@ private:
         double avg = std::accumulate(segment_lengths.begin(),
                                      segment_lengths.end(), 0.0) / N;
         static const Complex I(0.0, 1.0);
-        return alpha*I*(1.0/4.0)
+        return I*(1.0/4.0)
              * boost::math::cyl_hankel_1(0, k*(avg/2.0))
              * avg;
     }
@@ -126,6 +126,7 @@ private:
     // Build the boundary interaction matrix M
     std::vector<Complex> buildMMatrixFlat() {
         std::vector<Complex> M(N*N);
+        #pragma omp parallel for num_threads(threads)
         for (size_t id = 0; id < N*N; ++id) {
             auto [i,j] = ij(id);
             // If the entry Mij is diagonal call handleDiagonal(), otherwise compute the Green funtion times the segment lenght
@@ -261,8 +262,9 @@ private:
 
     std::vector<Vector2d> boundary;
     size_t                N;
+    int                   threads;
     std::vector<double>   gamma;
-    double                k, angle, alpha, kx, ky;
+    double                k, angle, kx, ky;
     std::vector<double>   segment_lengths;
     std::vector<Complex>  M_flat;
     MatrixXcd             T;

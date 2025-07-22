@@ -1,12 +1,14 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import sys
 
 sns.set()
 sns.set_context("paper")
 sns.set_palette("colorblind")
 
 def main():
+    cadena_opt = sys.argv[1]
     datCpp = np.loadtxt("tiempos_cpp.txt")
     datCuda = np.loadtxt("tiempos_cuda.txt")
 
@@ -18,6 +20,6 @@ def main():
     ax.legend(fontsize=12)
     ax.grid(True)
     fig.tight_layout()
-    fig.savefig("Tiempos_sin_optimizer.pdf")
+    fig.savefig(f"Tiempos_{cadena_opt}.pdf")
 
 main()
