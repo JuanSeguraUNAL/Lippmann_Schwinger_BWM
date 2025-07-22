@@ -1,7 +1,6 @@
 #ifndef BWM_BOUNDARY_WALL_METHOD_HPP
 #define BWM_BOUNDARY_WALL_METHOD_HPP
 
-#include <boost/math/special_functions/hankel.hpp>
 #include <iostream>
 #include <complex>
 #include <vector>
@@ -52,36 +51,30 @@ __global__ void kernel_normT(const cuDoubleComplex* d_T, double* d_partial_sums,
     if(tid == 0){d_partial_sums[blockIdx.x] = sdata_normT[0];}
 }
 
-__device__ cuDoubleComplex hankel_0_1(double x){
-    // H_0^1(x) = J_0(x) + iY_0(x)
-    return make_cuDoubleComplex(::j0(x), ::y0(x));
-}
-
-__device__ cuDoubleComplex handleDiagonal(double *lengths, int k, double alpha, int N){
-    cuDoubleComplex I = make_cuDoubleComplex(0.0, 1.0);
+__device__ cuDoubleComplex handleDiagonal(double *lengths, int k, int N){
     double avg = 0;
     for(int i = 0; i < N; ++i){
         avg += lengths[i];
     }
     avg = avg / N;
 
-    return cuCmul(cuCmul(I, make_cuDoubleComplex(alpha / 4, 0.0)), hankel_0_1(k * avg / 2.0));
+    // i * H / 4 = -Y0/4 + iJ0 / 4
+    return make_cuDoubleComplex(-y0(k * avg / 2) / 4, j0(k * avg / 2) / 4);
 }
 
-__device__ cuDoubleComplex green(double *lengths, const Point r1, const Point r2, double k, double alpha, int N){
-    cuDoubleComplex I = make_cuDoubleComplex(0.0, 1.0);
+__device__ cuDoubleComplex green(double *lengths, const Point r1, const Point r2, double k, int N){
     double R = distance(r1, r2);
     double arg = k * R;
 
-    if (R < 1e-10) return handleDiagonal(lengths, k, alpha, N);
+    if (R < 1e-10) return handleDiagonal(lengths, k, N);
 
-    return cuCmul(cuCmul(I, make_cuDoubleComplex(alpha / 4, 0.0)), hankel_0_1(arg));
+    // i * H / 4 = -Y0/4 + iJ0 / 4
+    return make_cuDoubleComplex(-y0(arg) / 4, j0(arg) / 4);
 }
-
 
 //
 __global__ void TotalWave(cuDoubleComplex *psi, cuDoubleComplex *Tphi, double *lengths, Point *obs, 
-                        Point *boundary, double k, double alpha, double angle, size_t n_obs, int N){
+                        Point *boundary, double k, double angle, size_t n_obs, int N){
     extern __shared__ cuDoubleComplex sdata[];
 
     int row = threadIdx.y;  // j dentro del bloque
@@ -93,7 +86,7 @@ __global__ void TotalWave(cuDoubleComplex *psi, cuDoubleComplex *Tphi, double *l
     
     // Solo procesar si estamos dentro de los límites
     if(col < n_obs && row < N) {
-        cuDoubleComplex G = green(lengths, obs[col], boundary[row], k, alpha, N);
+        cuDoubleComplex G = green(lengths, obs[col], boundary[row], k, N);
         sdata[tid] = cuCmul(cuCmul(G, make_cuDoubleComplex(lengths[row], 0.0)), Tphi[row]);
     }
     __syncthreads();
@@ -116,14 +109,14 @@ __global__ void TotalWave(cuDoubleComplex *psi, cuDoubleComplex *Tphi, double *l
 }
 
 //
-__global__ void kernelMatrixM(cuDoubleComplex *M, double *lengths, Point *boundary, double k, double alpha, int N, int N2){
+__global__ void kernelMatrixM(cuDoubleComplex *M, double *lengths, Point *boundary, double k, int N, int N2){
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
     if(tid < N2){
         int i = tid % N;
         int j = tid / N;
-        M[tid] = (i == j ? handleDiagonal(lengths,k, alpha, N) 
-                         : cuCmul(green(lengths,boundary[i],boundary[j],k,alpha,N), make_cuDoubleComplex(lengths[j], 0.0)));
+        M[tid] = (i == j ? handleDiagonal(lengths,k, N) 
+                         : cuCmul(green(lengths,boundary[i],boundary[j],k,N), make_cuDoubleComplex(lengths[j], 0.0)));
     }
 }
 
@@ -166,11 +159,10 @@ public:
                        size_t boundary_size,
                        double* gamma_vals,
                        size_t gamma_size,
-                       double k_, double angle_,
-                       double alpha_ = 1.0)
+                       double k_, double angle_)
       : boundary(boundary_points),
         N(boundary_size),
-        k(k_), angle(angle_), alpha(alpha_)
+        k(k_), angle(angle_)
     {   
         //
         cublasCreate(&handle);
@@ -258,7 +250,7 @@ public:
         cudaMemcpy(d_obs, obs, n_obs * sizeof(Point), cudaMemcpyHostToDevice);
         cudaMemcpy(d_boundary, boundary, N * sizeof(Point), cudaMemcpyHostToDevice);
 
-        TotalWave<<<blocks, threads, shared_mem>>>(d_psi, d_Tphi, d_segment_lengths, d_obs, d_boundary, k, alpha, angle, n_obs, N);
+        TotalWave<<<blocks, threads, shared_mem>>>(d_psi, d_Tphi, d_segment_lengths, d_obs, d_boundary, k, angle, n_obs, N);
         cudaMemcpy(psi, d_psi, n_obs * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost);
 
         // Free memory
@@ -306,8 +298,8 @@ private:
         //std::cout << "El valor de k*(avg/2.0) es: " << k*(avg/2.0) << "\n";
 
         std::complex<double> hankel = boost::math::cyl_hankel_1(0, k*(avg/2.0));
-        double hankel_real = alpha * 0.25 * hankel.real() * avg;
-        double hankel_imag = alpha * 0.25 * hankel.imag() * avg;
+        double hankel_real = 0.25 * hankel.real() * avg;
+        double hankel_imag = 0.25 * hankel.imag() * avg;
         return make_cuDoubleComplex(-hankel_imag, hankel_real);
     }
 
@@ -323,7 +315,7 @@ private:
         cudaMemcpy(d_segment_lengths, segment_lengths, N * sizeof(double), cudaMemcpyHostToDevice);
         cudaMemcpy(d_boundary, boundary, 2 * N * sizeof(double), cudaMemcpyHostToDevice);
         int NUM_BLOCKS = (N*N + NUM_THREADS - 1) / NUM_THREADS;
-        kernelMatrixM<<<NUM_BLOCKS, NUM_THREADS>>>(d_M, d_segment_lengths, d_boundary, k, alpha, N, N*N);
+        kernelMatrixM<<<NUM_BLOCKS, NUM_THREADS>>>(d_M, d_segment_lengths, d_boundary, k, N, N*N);
 
         cudaMemcpy(M, d_M, N * N * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost);
 
@@ -595,7 +587,7 @@ private:
     Point*            boundary;
     size_t            N;
     double*           gamma;
-    double            k, angle, alpha, kx, ky;
+    double            k, angle, kx, ky;
     double*           segment_lengths;
     cuDoubleComplex*  M_flat;
     cuDoubleComplex*  T;
