@@ -22,7 +22,7 @@ PLOTDP_PY    = plot_dprob_dfase/plot_results.py
 # Parámetros por defecto (se pueden sobrescribir en la invocación)
 xi0  ?= 3.0
 eta0 ?= 2.0
-k2   ?= 0.406
+k2   ?= 0.408
 
 .PHONY: all plotb plot clean
 

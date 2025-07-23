@@ -37,15 +37,12 @@ int main(int argc, char* argv[]){
 
     // 3) malla y volcado de density.dat y phase.dat
     start = std::chrono::high_resolution_clock::now();
-    std::ofstream foutD("density.dat"), foutP("phase.dat");
     double xmin=-8, xmax=8;
     for(int i=0;i<Ngrid;++i){
         double y = xmin + i*(xmax-xmin)/(Ngrid-1);
         for(int j=0;j<Ngrid;++j){
             double x   = xmin + j*(xmax-xmin)/(Ngrid-1);
             auto ψ     = solver.computeScatteredWave({{x,y}})[0];
-            foutD<<std::norm(ψ)<<(j+1==Ngrid? "\n":" ");
-            foutP<<std::arg(ψ)<<(j+1==Ngrid? "\n":" ");
         }
     }
 

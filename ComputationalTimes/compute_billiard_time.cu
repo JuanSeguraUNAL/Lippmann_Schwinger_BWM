@@ -41,7 +41,6 @@ int main(int argc, char* argv[]){
 
     // 3) Malla y volcado de density.dat y phase.dat
     start = std::chrono::high_resolution_clock::now();
-    std::ofstream foutD("density.dat"), foutP("phase.dat");
     double xmin=-8, xmax=8;
     Point *P = (Point*)malloc(sizeof(Point));
     for(int i = 0; i < Ngrid; ++i){
@@ -50,12 +49,8 @@ int main(int argc, char* argv[]){
             double x = xmin + j*(xmax-xmin)/(Ngrid-1);
             Point p = {x,y};
             P[0] = p;
-            //std::cout << "INICIO PUNTO (" << x << " , " << y << ")\n";
             auto psi = solver.computeScatteredWave(P, Ngrid)[0];
             cudaDeviceSynchronize();
-            foutD << (psi.x * psi.x + psi.y * psi.y) << (j+1==Ngrid? "\n":" ");
-            foutP << atan2(psi.y, psi.x) << (j+1==Ngrid? "\n":" ");
-            //std::cout << "FIN PUNTO (" << x << " , " << y << ")\n";
         }
     }
 

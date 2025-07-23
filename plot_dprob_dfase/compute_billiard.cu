@@ -14,7 +14,8 @@ int main(int argc, char* argv[]){
     double xi0   = std::stod(argv[1]);
     double eta0  = std::stod(argv[2]);
     double k2    = std::stod(argv[3]);
-    double angle = 0.0;
+    double angle_deg = std::stod(argv[4]);
+    double angle = angle_deg * (M_PI / 180.0);
     double gamma = std::numeric_limits<double>::infinity();
     int    num_b = 200;
     int    Ngrid = 200;
@@ -29,17 +30,11 @@ int main(int argc, char* argv[]){
     foutB.close();
     cudaDeviceSynchronize();
 
-    // Revisar si el contorno fue hecho adecuadamente
-    for(int i = 0; i < num_b; ++i){
-        std::cout << "Punto " << i << " del boundary: " << boundary[i].x << "\t" << boundary[i].y << "\n"; 
-    }
-
     // 2) Solver BWM
     double* gammas = (double*)malloc(sizeof(double));
     gammas[0] = gamma;
     bwm::BoundaryWallMethod solver(boundary, num_b, gammas, 1, std::sqrt(k2), angle);
     cudaDeviceSynchronize();
-    std::cout << "SE CONSTRUYO EL SOLVER ADECUADAMENTE\n";
 
     // 3) Malla y volcado de density.dat y phase.dat
     std::ofstream foutD("density.dat"), foutP("phase.dat");
@@ -51,12 +46,10 @@ int main(int argc, char* argv[]){
             double x = xmin + j*(xmax-xmin)/(Ngrid-1);
             Point p = {x,y};
             P[0] = p;
-            std::cout << "INICIO PUNTO (" << x << " , " << y << ")\n";
             auto psi = solver.computeScatteredWave(P, Ngrid)[0];
             cudaDeviceSynchronize();
             foutD << (psi.x * psi.x + psi.y * psi.y) << (j+1==Ngrid? "\n":" ");
             foutP << atan2(psi.y, psi.x) << (j+1==Ngrid? "\n":" ");
-            std::cout << "FIN PUNTO (" << x << " , " << y << ")\n";
         }
     }
     return 0;
